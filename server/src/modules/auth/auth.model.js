@@ -110,6 +110,7 @@ const adminSchema = new mongoose.Schema(
 
 adminSchema.index({ email: 1 }, { unique: true });
 
-const Admin = mongoose.model("Admin", adminSchema);
+const Admin =
+  mongoose.models.Admin || mongoose.model("Admin", adminSchema);
 
 module.exports = Admin;

@@ -1,3 +1,4 @@
+
 const path = require("path");
 const dotenv = require("dotenv");
 const { z } = require("zod");
@@ -21,8 +22,17 @@ const envSchema = z.object({
   JWT_ACCESS_SECRET: z
     .string()
     .min(64, "JWT_ACCESS_SECRET must be at least 64 characters"),
-  
-  MONGODB_URI: z.string().min(1, "MONGODB_URI is required"),  
+
+  MONGODB_URI: z.string().min(1, "MONGODB_URI is required"),
+
+  // Resend email configuration
+  RESEND_API_KEY: z
+    .string()
+    .min(1, "RESEND_API_KEY is required"),
+
+  EMAIL_FROM: z
+    .string()
+    .min(1, "EMAIL_FROM is required"),
 });
 
 const result = envSchema.safeParse(process.env);

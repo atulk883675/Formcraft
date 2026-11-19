@@ -1,6 +1,7 @@
 
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
+const sendEmail = require("../../services/email.service");
 
 const Admin = require("./auth.model");
 const env = require("../../config/env");
@@ -13,6 +14,8 @@ const {
 const ACCESS_TOKEN_EXPIRY = "15m";
 const REFRESH_SESSION_DAYS = 7;
 const PASSWORD_RESET_TOKEN_MINUTES = 30;
+const EMAIL_VERIFICATION_HOURS = 24;
+
 
 // Generate an access JWT.
 const generateAccessToken = (adminId, sessionId) => {
@@ -74,12 +77,48 @@ const registerAdmin = async ({ name, email, password }) => {
   const hashedPassword = await hashPassword(password);
   const { refreshToken, session } = createRefreshSession();
 
+  const verificationToken = crypto.randomBytes(32).toString("hex");
+
+  const verificationTokenHash = crypto
+    .createHash("sha256")
+    .update(verificationToken)
+    .digest("hex");
+
+  const verificationExpiresAt = new Date(
+    Date.now() + EMAIL_VERIFICATION_HOURS * 60 * 60 * 1000
+  );
+
   try {
     const admin = await Admin.create({
       name: name.trim(),
       email: normalizedEmail,
       password: hashedPassword,
+      isEmailVerified: false,
+      emailVerificationTokenHash: verificationTokenHash,
+      emailVerificationExpiresAt: verificationExpiresAt,
       refreshSessions: [session],
+    });
+
+    const verificationUrl =
+      `${env.CLIENT_URL}/verify-email?token=${verificationToken}`;
+
+    await sendEmail({
+      to: normalizedEmail,
+      subject: "Verify your FormCraft email address",
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+          <h2>Welcome to FormCraft!</h2>
+          <p>Hello ${name.trim()},</p>
+          <p>Please verify your email address by clicking the link below:</p>
+          <p>
+            <a href="${verificationUrl}">
+              Verify my email address
+            </a>
+          </p>
+          <p>This link will expire in 24 hours.</p>
+          <p>If you did not create this account, you can ignore this email.</p>
+        </div>
+      `,
     });
 
     const accessToken = generateAccessToken(
@@ -108,6 +147,7 @@ const registerAdmin = async ({ name, email, password }) => {
     throw error;
   }
 };
+
 
 // Log in an existing Admin and create a new session.
 const loginAdmin = async ({ email, password }) => {
@@ -329,6 +369,195 @@ const resetAdminPassword = async ({ token, newPassword }) => {
   return true;
 };
 
+// Verify an Admin's email address using a single-use token.
+const verifyAdminEmail = async (token) => {
+  if (!token || !/^[a-f0-9]{64}$/i.test(token)) {
+    throw new ApiError(400, "Invalid or expired verification link");
+  }
+
+  // Hash the token received from the frontend.
+  const tokenHash = crypto
+    .createHash("sha256")
+    .update(token)
+    .digest("hex");
+
+  const now = new Date();
+
+  // Atomically verify the email and consume the token.
+  const admin = await Admin.findOneAndUpdate(
+    {
+      emailVerificationTokenHash: tokenHash,
+      emailVerificationExpiresAt: { $gt: now },
+      isEmailVerified: false,
+    },
+    {
+      $set: {
+        isEmailVerified: true,
+        emailVerificationTokenHash: null,
+        emailVerificationExpiresAt: null,
+      },
+    },
+    {
+      new: true,
+    }
+  );
+
+  if (!admin) {
+    throw new ApiError(400, "Invalid or expired verification link");
+  }
+
+  return {
+    id: admin._id,
+    email: admin.email,
+    isEmailVerified: admin.isEmailVerified,
+  };
+};
+
+const requestAdminEmailChange = async ({
+  adminId,
+  newEmail,
+  currentPassword,
+}) => {
+  const normalizedEmail = newEmail.trim().toLowerCase();
+
+  // Find the authenticated Admin and include the password field.
+  const admin = await Admin.findById(adminId).select("+password");
+
+  if (!admin) {
+    throw new ApiError(404, "Admin account not found");
+  }
+
+  // Only verified accounts can change their email.
+  if (!admin.isEmailVerified) {
+    throw new ApiError(403, "Please verify your current email first");
+  }
+
+  // Confirm the current password.
+  const isPasswordValid = await comparePassword(
+    currentPassword,
+    admin.password
+  );
+
+  if (!isPasswordValid) {
+    throw new ApiError(401, "Current password is incorrect");
+  }
+
+  // Prevent requesting the same email address.
+  if (normalizedEmail === admin.email.toLowerCase()) {
+    throw new ApiError(
+      400,
+      "New email must be different from your current email"
+    );
+  }
+
+  // Check whether another Admin already uses this email.
+  const existingAdmin = await Admin.findOne({
+    email: normalizedEmail,
+  });
+
+  if (existingAdmin) {
+    throw new ApiError(
+      409,
+      "An account with this email already exists"
+    );
+  }
+
+  // Generate a secure verification token.
+  const verificationToken = crypto.randomBytes(32).toString("hex");
+
+  const verificationTokenHash = crypto
+    .createHash("sha256")
+    .update(verificationToken)
+    .digest("hex");
+
+  const verificationExpiresAt = new Date(
+    Date.now() + EMAIL_VERIFICATION_HOURS * 60 * 60 * 1000
+  );
+
+  // Store the pending email and hashed token.
+  admin.pendingEmail = normalizedEmail;
+  admin.emailChangeTokenHash = verificationTokenHash;
+  admin.emailChangeTokenExpiresAt = verificationExpiresAt;
+
+  await admin.save();
+
+  // Send verification link to the new email address.
+  const verificationUrl =
+    `${env.CLIENT_URL}/verify-email-change?token=${verificationToken}`;
+
+  await sendEmail({
+    to: normalizedEmail,
+    subject: "Verify your new FormCraft email address",
+    html: `
+      <h2>Verify your new email address</h2>
+      <p>You requested to change the email address associated with your FormCraft account.</p>
+      <p>Click the link below to verify your new email address:</p>
+      <a href="${verificationUrl}">Verify New Email</a>
+      <p>This link expires in ${EMAIL_VERIFICATION_HOURS} hours.</p>
+      <p>If you did not request this change, you can safely ignore this email.</p>
+    `,
+  });
+
+  return {
+    pendingEmail: admin.pendingEmail,
+    message: "Verification email sent to your new email address",
+  };
+};
+
+const verifyAdminEmailChange = async (token) => {
+  if (!token || !/^[a-f0-9]{64}$/i.test(token)) {
+    throw new ApiError(400, "Invalid or expired verification link");
+  }
+
+  const tokenHash = crypto
+    .createHash("sha256")
+    .update(token)
+    .digest("hex");
+
+  const now = new Date();
+
+  try {
+    const admin = await Admin.findOneAndUpdate(
+      {
+        emailChangeTokenHash: tokenHash,
+        emailChangeTokenExpiresAt: { $gt: now },
+        pendingEmail: { $exists: true, $ne: null },
+        isEmailVerified: true,
+      },
+      [
+        {
+          $set: {
+            email: "$pendingEmail",
+            pendingEmail: null,
+            emailChangeTokenHash: null,
+            emailChangeTokenExpiresAt: null,
+          },
+        },
+      ],
+      { new: true }
+    );
+
+    if (!admin) {
+      throw new ApiError(400, "Invalid or expired verification link");
+    }
+
+    return {
+      id: admin._id,
+      email: admin.email,
+      isEmailVerified: admin.isEmailVerified,
+    };
+  } catch (error) {
+    if (error.code === 11000) {
+      throw new ApiError(
+        409,
+        "This email address is already associated with another account"
+      );
+    }
+
+    throw error;
+  }
+};
+
 // Log out from the current session.
 const logoutAdminSession = async (adminId, sessionId) => {
   const now = new Date();
@@ -407,4 +636,7 @@ module.exports = {
   resetAdminPassword,
   logoutAdminSession,
   logoutAllAdminSessions,
+  verifyAdminEmail,
+  requestAdminEmailChange,
+  verifyAdminEmailChange
 };

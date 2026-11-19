@@ -32,7 +32,23 @@ const changePasswordSchema = z
     }
   );
 
+const changeEmailSchema = z
+  .object({
+    newEmail: z
+      .string()
+      .trim()
+      .email("Please provide a valid email address")
+      .max(254, "Email must not exceed 254 characters"),
+
+    currentPassword: z
+      .string()
+      .min(8, "Current password must be at least 8 characters")
+      .max(128, "Current password must not exceed 128 characters"),
+  })
+  .strict();  
+
 module.exports = {
   updateProfileSchema,
   changePasswordSchema,
+  changeEmailSchema,
 };

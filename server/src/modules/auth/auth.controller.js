@@ -7,6 +7,9 @@ const {
   resetAdminPassword,
   logoutAdminSession,
   logoutAllAdminSessions,
+  verifyAdminEmail,
+  requestAdminEmailChange,
+  verifyAdminEmailChange,
 } = require("./auth.service");
 
 const ApiResponse = require("../../utils/ApiResponse");
@@ -117,6 +120,53 @@ const resetPassword = async (req, res) => {
   );
 };
 
+// Verify an Admin's email address.
+const verifyEmail = async (req, res) => {
+  const { token } = req.body;
+
+  await verifyAdminEmail(token);
+
+  res.status(200).json(
+    new ApiResponse(
+      200,
+      null,
+      "Email address verified successfully"
+    )
+  );
+};
+
+const requestEmailChange = async (req, res) => {
+  const { newEmail, currentPassword } = req.body;
+
+  const result = await requestAdminEmailChange({
+    adminId: req.auth.adminId,
+    newEmail,
+    currentPassword,
+  });
+
+  res.status(200).json(
+    new ApiResponse(
+      200,
+      result,
+      "Email change verification link sent successfully"
+    )
+  );
+};
+
+const verifyEmailChange = async (req, res) => {
+  const { token } = req.body;
+
+  const result = await verifyAdminEmailChange(token);
+
+  res.status(200).json(
+    new ApiResponse(
+      200,
+      result,
+      "Email address changed successfully"
+    )
+  );
+};
+
 const logout = async (req, res) => {
   await logoutAdminSession(
     req.auth.adminId,
@@ -150,6 +200,9 @@ module.exports = {
   refresh,
   forgotPassword,
   resetPassword,
+  verifyEmail,
+  requestEmailChange,
+ verifyEmailChange,
   logout,
   logoutAll,
 };

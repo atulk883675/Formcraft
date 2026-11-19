@@ -7,8 +7,11 @@ const {
   refresh,
   forgotPassword,
   resetPassword,
+  verifyEmail,
   logout,
   logoutAll,
+  requestEmailChange,
+  verifyEmailChange,
 } = require("./auth.controller");
 
 const {
@@ -17,6 +20,8 @@ const {
   forgotPasswordSchema,
   resetPasswordSchema,
 } = require("./auth.validation");
+
+const { changeEmailSchema } = require("../admin/admin.validation");
 
 const validateMiddleware = require("../../middlewares/validateMiddleware");
 const authMiddleware = require("../../middlewares/authMiddleware");
@@ -50,6 +55,25 @@ router.post(
   "/reset-password",
   validateMiddleware(resetPasswordSchema),
   resetPassword
+);
+
+router.post(
+  "/verify-email",
+  verifyEmail
+);
+
+// Authenticated: request an email change
+router.post(
+  "/change-email",
+  authMiddleware,
+  validateMiddleware(changeEmailSchema),
+  requestEmailChange
+);
+
+// Public: verify the new email address
+router.post(
+  "/verify-email-change",
+  verifyEmailChange
 );
 
 router.post(
