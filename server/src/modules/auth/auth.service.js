@@ -152,28 +152,6 @@ const loginAdmin = async ({ email, password }) => {
   };
 };
 
-// Revoke all active sessions if a previously used token is reused.
-const revokeAllActiveSessions = async (adminId, now) => {
-  await Admin.updateOne(
-    { _id: adminId },
-    {
-      $set: {
-        "refreshSessions.$[session].revokedAt": now,
-        "refreshSessions.$[session].revokeReason":
-          "refresh_token_reuse",
-      },
-    },
-    {
-      arrayFilters: [
-        {
-          "session.revokedAt": null,
-          "session.expiresAt": { $gt: now },
-        },
-      ],
-    }
-  );
-};
-
 // Refresh an Admin session and rotate its refresh token.
 const refreshAdminSession = async (presentedToken) => {
   if (
@@ -230,38 +208,31 @@ const refreshAdminSession = async (presentedToken) => {
     }
   );
 
-  if (updatedAdmin) {
-    const matchingSession = updatedAdmin.refreshSessions.find(
-      (session) => session.tokenHash === newTokenHash
-    );
-
-    const accessToken = generateAccessToken(
-      updatedAdmin._id.toString(),
-      matchingSession.sessionId
-    );
-
-    return {
-      admin: {
-        id: updatedAdmin._id,
-        name: updatedAdmin.name,
-        email: updatedAdmin.email,
-        isEmailVerified: updatedAdmin.isEmailVerified,
-      },
-      accessToken,
-      refreshToken: newRefreshToken,
-    };
+  if (!updatedAdmin) {
+    // An old, reused, invalid, or expired token is simply rejected.
+    // Other active sessions belonging to this Admin are not affected.
+    throw new ApiError(401, "Invalid or expired refresh token");
   }
 
-  // The token was not current. Check whether it was used previously.
-  const adminWithReusedToken = await Admin.findOne({
-    "refreshSessions.tokenHistory.tokenHash": oldTokenHash,
-  });
+  const matchingSession = updatedAdmin.refreshSessions.find(
+    (session) => session.tokenHash === newTokenHash
+  );
 
-  if (adminWithReusedToken) {
-    await revokeAllActiveSessions(adminWithReusedToken._id, now);
-  }
+  const accessToken = generateAccessToken(
+    updatedAdmin._id.toString(),
+    matchingSession.sessionId
+  );
 
-  throw new ApiError(401, "Invalid or expired refresh token");
+  return {
+    admin: {
+      id: updatedAdmin._id,
+      name: updatedAdmin.name,
+      email: updatedAdmin.email,
+      isEmailVerified: updatedAdmin.isEmailVerified,
+    },
+    accessToken,
+    refreshToken: newRefreshToken,
+  };
 };
 
 // Request a password-reset token.
@@ -301,8 +272,8 @@ const requestPasswordReset = async ({ email }) => {
     }
   );
 
-  // Internal use only: the controller must pass this to the
-  // future email-delivery adapter and must never expose it in an API response.
+  // Internal use only: the future email-delivery adapter must never
+  // expose this token in an API response.
   return {
     resetToken,
   };
@@ -358,6 +329,7 @@ const resetAdminPassword = async ({ token, newPassword }) => {
   return true;
 };
 
+// Log out from the current session.
 const logoutAdminSession = async (adminId, sessionId) => {
   const now = new Date();
 
